@@ -141,26 +141,27 @@ class YoloGeneralNode : public rclcpp::Node {
     }
 
     void ProcessFrame(const std_msgs::msg::Header& header, const cv::Mat& bgr) {
-        std::vector<VisionServiceResult> results;
-        if (service_->InferImage(bgr, &results) != VISION_SERVICE_OK) {
+        VisionServiceResponse response;
+        if (service_->Infer(bgr, &response) != VISION_SERVICE_OK || !response.ok) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "infer failed: %s",
                                     service_->LastError().c_str());
             return;
         }
 
         std::vector<yolo_general::DetectionBox> boxes;
-        boxes.reserve(results.size());
-        for (const auto& r : results) {
-            if (r.score < static_cast<float>(score_threshold_)) continue;
+        boxes.reserve(response.results.size());
+        for (const auto& r : response.results) {
+            const auto* det = std::get_if<vision::Detection>(&r);
+            if (det == nullptr || det->score < static_cast<float>(score_threshold_)) continue;
             yolo_general::DetectionBox b;
-            b.x1 = r.x1;
-            b.y1 = r.y1;
-            b.x2 = r.x2;
-            b.y2 = r.y2;
-            b.score = r.score;
-            b.label = r.label;
-            b.track_id = r.track_id;
-            b.class_name = LabelName(r.label);
+            b.x1 = det->bbox.x1;
+            b.y1 = det->bbox.y1;
+            b.x2 = det->bbox.x2;
+            b.y2 = det->bbox.y2;
+            b.score = det->score;
+            b.label = det->label;
+            b.track_id = -1;
+            b.class_name = LabelName(det->label);
             boxes.push_back(b);
         }
 
@@ -168,7 +169,7 @@ class YoloGeneralNode : public rclcpp::Node {
 #ifdef HAVE_VISION_MSGS
         detections_pub_->publish(yolo_general::EncodeDetection2DArray(boxes, header));
 #endif
-        PublishDebugImage(header, bgr);
+        PublishDebugImage(header, bgr, response);
     }
 
     std::string LabelName(int label_id) const {
@@ -178,9 +179,10 @@ class YoloGeneralNode : public rclcpp::Node {
         return "class_" + std::to_string(label_id);
     }
 
-    void PublishDebugImage(const std_msgs::msg::Header& header, const cv::Mat& bgr) {
+    void PublishDebugImage(const std_msgs::msg::Header& header, const cv::Mat& bgr,
+                            const VisionServiceResponse& response) {
         cv::Mat out_image;
-        if (service_->Draw(bgr, &out_image) != VISION_SERVICE_OK) return;
+        if (service_->Draw(bgr, response, &out_image) != VISION_SERVICE_OK) return;
         if (out_image.empty() || out_image.rows != bgr.rows || out_image.cols != bgr.cols)
             return;
         debug_pub_->publish(yolo_general::BgrToImageMsg(out_image, header, "bgr8"));
